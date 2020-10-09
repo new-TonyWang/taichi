@@ -82,6 +82,25 @@ void export_lang(py::module &m) {
 #undef PER_EXTENSION
       .export_values();
 
+  py::class_<DataType>(m, "DataType")
+      .def(py::self == py::self)
+      .def(py::pickle(
+          [](const DataType &dt) {
+            // Note: this only works for primitive types, which is fine for now.
+            auto primitive = dynamic_cast<const PrimitiveType *>(dt.get_ptr());
+            TI_ASSERT(primitive);
+            return py::make_tuple((std::size_t)primitive->type);
+          },
+          [](py::tuple t) {
+            if (t.size() != 1)
+              throw std::runtime_error("Invalid state!");
+
+            DataType dt = PrimitiveType::get(
+                (PrimitiveType::primitive_type)(t[0].cast<std::size_t>()));
+
+            return dt;
+          }));
+
   py::class_<CompileConfig>(m, "CompileConfig")
       .def(py::init<>())
       .def_readwrite("arch", &CompileConfig::arch)
@@ -487,7 +506,7 @@ void export_lang(py::module &m) {
     auto var = Expr(std::make_shared<IdExpression>());
     current_ast_builder().insert(std::make_unique<FrontendAllocaStmt>(
         std::static_pointer_cast<IdExpression>(var.expr)->id,
-        DataType::unknown));
+        PrimitiveType::unknown));
     return var;
   });
   m.def("expr_assign", expr_assign);
@@ -529,11 +548,11 @@ void export_lang(py::module &m) {
   unary.export_values();
   m.def("make_unary_op_expr",
         Expr::make<UnaryOpExpression, const UnaryOpType &, const Expr &>);
-
-  auto &&data_type = py::enum_<DataType>(m, "DataType", py::arithmetic());
-  for (int t = 0; t <= (int)DataType::unknown; t++)
-    data_type.value(data_type_name(DataType(t)).c_str(), DataType(t));
-  data_type.export_values();
+#define PER_TYPE(x)                                                  \
+  m.attr(("DataType_" + data_type_name(PrimitiveType::x)).c_str()) = \
+      PrimitiveType::x;
+#include "taichi/inc/data_type.inc.h"
+#undef PER_TYPE
 
   m.def("is_integral", is_integral);
   m.def("is_signed", is_signed);
@@ -672,7 +691,7 @@ void export_lang(py::module &m) {
 #if defined(TI_WITH_CUDA)
       return CUDAContext::get_instance().get_compute_capability();
 #else
-      TI_NOT_IMPLEMENTED
+    TI_NOT_IMPLEMENTED
 #endif
     } else {
       TI_ERROR("Key {} not supported in query_int64", key);

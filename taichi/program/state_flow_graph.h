@@ -36,10 +36,26 @@ class StateFlowGraph {
     // keep it up-to-date.
     int node_id{0};
 
+    // Returns the position in get_pending_tasks() or extract_pending_tasks().
+    // For executed tasks (including the initial node), pending_node_id is -1.
+    int pending_node_id{0};
+
     // Profiling showed horrible performance using std::unordered_multimap (at
     // least on Mac with clang-1103.0.32.62)...
     std::unordered_map<AsyncState, std::unordered_set<Node *>> output_edges,
         input_edges;
+
+    bool pending() const {
+      return pending_node_id >= 0;
+    }
+
+    bool executed() const {
+      return pending_node_id == -1;
+    }
+
+    void mark_executed() {
+      pending_node_id = -1;
+    }
 
     std::string string() const;
 
@@ -62,20 +78,15 @@ class StateFlowGraph {
 
       // Note:
       // Read-after-write leads to flow edges
-      // Write-after-write leads to flow edges
+      // Write-after-write leads to dependency edges
       // Write-after-read leads to dependency edges
       //
-      // So an edge is a data flow edge iff the starting node writes to the
+      // So an edge is a data flow edge iff the destination node reads the
       // state.
       //
 
-      if (is_initial_node) {
-        // The initial node is special.
-        return destination->meta->input_states.find(state) !=
-               destination->meta->input_states.end();
-      } else {
-        return meta->output_states.find(state) != meta->output_states.end();
-      }
+      return destination->meta->input_states.find(state) !=
+             destination->meta->input_states.end();
     }
 
     void disconnect_all();
@@ -85,7 +96,16 @@ class StateFlowGraph {
 
   StateFlowGraph(IRBank *ir_bank);
 
+  std::vector<Node *> get_pending_tasks() const;
+
+  // Returns get_pending_tasks()[begin, end).
+  std::vector<Node *> get_pending_tasks(int begin, int end) const;
+
+  std::vector<std::unique_ptr<Node>> extract_pending_tasks();
+
   void clear();
+
+  void mark_pending_tasks_as_executed();
 
   void print();
 
@@ -102,10 +122,15 @@ class StateFlowGraph {
 
   void insert_task(const TaskLaunchRecord &rec);
 
-  void insert_state_flow(Node *from, Node *to, AsyncState state);
+  void insert_edge(Node *from, Node *to, AsyncState state);
 
+  // Compute transitive closure for tasks in get_pending_tasks()[begin, end).
   std::pair<std::vector<bit::Bitset>, std::vector<bit::Bitset>>
-  compute_transitive_closure();
+  compute_transitive_closure(int begin, int end);
+
+  // Fuse tasks in get_pending_tasks()[begin, end),
+  // return the indices to delete.
+  std::unordered_set<int> fuse_range(int begin, int end);
 
   bool fuse();
 
@@ -119,24 +144,34 @@ class StateFlowGraph {
 
   void reid_nodes();
 
+  void reid_pending_nodes();
+
   void replace_reference(Node *node_a,
                          Node *node_b,
                          bool only_output_edges = false);
 
   void topo_sort_nodes();
 
-  void verify();
+  void verify() const;
+
+  // Extract all pending tasks and insert them in topological/original order.
+  void rebuild_graph(bool sort);
 
   // Extract all tasks to execute.
-  std::vector<TaskLaunchRecord> extract(bool sort = true);
+  std::vector<TaskLaunchRecord> extract_to_execute();
 
-  std::size_t size() {
+  std::size_t size() const {
     return nodes_.size();
+  }
+
+  int num_pending_tasks() const {
+    return nodes_.size() - first_pending_task_index_;
   }
 
  private:
   std::vector<std::unique_ptr<Node>> nodes_;
   Node *initial_node_;  // The initial node holds all the initial states.
+  int first_pending_task_index_;
   TaskMeta initial_meta_;
   StateToNodeMapping latest_state_owner_;
   std::unordered_map<AsyncState, std::unordered_set<Node *>>
